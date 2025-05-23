@@ -48,7 +48,7 @@ def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
             "-"
         ]
         
-        resultat = subprocess.run(commande, capture_output=True, text=True, stderr=subprocess.STDOUT)
+        resultat = subprocess.run(commande, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         
         if resultat.returncode != 0 and "silencedetect" not in resultat.stdout:
             print(f"ERREUR FFmpeg pour '{os.path.basename(chemin_audio)}'")
@@ -83,7 +83,7 @@ def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
         ]
         
         try:
-            duree_result = subprocess.run(commande_duree, capture_output=True, text=True)
+            duree_result = subprocess.run(commande_duree, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             duree_totale = float(duree_result.stdout.strip())
         except:
             duree_totale = 0
