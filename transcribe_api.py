@@ -5,7 +5,7 @@ import subprocess
 import argparse
 
 MODELE = "base"
-LANGUE = "de"
+LANGUE = "mg"  # Code ISO pour le malagasy
 FORMAT_SORTIE = "json"
 
 EXTENSIONS_AUDIO = (
@@ -72,16 +72,16 @@ def transcrire_fichier(chemin_audio, repertoire_sortie):
             return False
 
     except ModuleNotFoundError:
-        print(f"Erreur: Le module 'whisper' ne semble pas être installé dans l'environnement Python actuel: {sys.executable}", file=sys.stderr)
-        print(f"Exécutez: pip install -U openai-whisper", file=sys.stderr)
+        print(f"Erreur: Le module 'whisperx' ne semble pas être installé dans l'environnement Python actuel: {sys.executable}", file=sys.stderr)
+        print(f"Exécutez: pip install whisperx", file=sys.stderr)
         return False
     except Exception as e:
-        print(f"Erreur inattendue lors de l'exécution de Whisper pour '{chemin_audio}': {e}", file=sys.stderr)
+        print(f"Erreur inattendue lors de l'exécution de WhisperX pour '{chemin_audio}': {e}", file=sys.stderr)
         return False
 
 def main():
     parser = argparse.ArgumentParser(
-        description=f"Transcrit les fichiers audio dans un répertoire en utilisant Whisper (Modèle: {MODELE}).",
+        description=f"Transcrit les fichiers audio malagasy dans un répertoire en utilisant WhisperX (Modèle: {MODELE}).",
         usage="%(prog)s <repertoire_contenant_fichiers_audio>"
     )
     parser.add_argument(
@@ -108,7 +108,7 @@ def main():
 
     print(f"\nDébut de la transcription de {len(fichiers_audio)} fichiers audio trouvés...")
     print(f"Modèle Whisper: {MODELE}")
-    print(f"Langue: {LANGUE}")
+    print(f"Langue: {LANGUE} (Malagasy)")
     print(f"Format de sortie: {FORMAT_SORTIE}")
     print(f"Répertoire de sortie: {repertoire_sortie}")
     if MODELE.lower() == "large":
