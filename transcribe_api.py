@@ -40,19 +40,24 @@ def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
 
     try:
         # Commande FFmpeg pour détecter les silences
-        commande = [
-            "ffmpeg",
-            "-i", chemin_audio,
-            "-af", "silencedetect=noise=-30dB:duration=0.5",
-            "-f", "null",
-            "-"
-        ]
+        # Essayer plusieurs seuils pour trouver le bon
+        seuils = ["-50dB", "-45dB", "-40dB", "-35dB", "-30dB"]
+        segments_parole = []
+        
+        for seuil in seuils:
+            print(f"  Test avec seuil {seuil}...")
+            commande = [
+                "ffmpeg",
+                "-i", chemin_audio,
+                "-af", f"silencedetect=noise={seuil}:duration=0.3",
+                "-f", "null",
+                "-"
+            ]
         
         resultat = subprocess.run(commande, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         
         if resultat.returncode != 0 and "silencedetect" not in resultat.stdout:
-            print(f"ERREUR FFmpeg pour '{os.path.basename(chemin_audio)}'")
-            return False
+            continue
         
         # Parser la sortie FFmpeg pour extraire les silences
         lignes = resultat.stdout.split('\n')
@@ -72,6 +77,21 @@ def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
                         silences[-1]["fin"] = fin_silence
                 except:
                     continue
+        
+        print(f"    Trouvé {len(silences)} silences avec {seuil}")
+        
+        # Si on trouve des silences (mais pas trop), on s'arrête
+        if 2 <= len(silences) <= 50:
+            print(f"  Seuil optimal trouvé: {seuil}")
+            break
+        elif len(silences) > 50:
+            print(f"    Trop de silences détectés ({len(silences)}), seuil trop sensible")
+            continue
+        
+        # Si on arrive au dernier seuil sans succès, on garde ce qu'on a
+        if seuil == seuils[-1]:
+            print(f"  Utilisation du dernier seuil testé: {seuil}")
+            break
         
         # Obtenir la durée totale du fichier
         commande_duree = [
@@ -96,7 +116,7 @@ def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
         for silence in silences:
             if silence["fin"] is not None:
                 # Segment de parole avant ce silence
-                if silence["debut"] > temps_precedent + 0.5:  # Au moins 0.5s de parole
+                if silence["debut"] > temps_precedent + 0.2:  # Au moins 0.2s de parole
                     segments_parole.append({
                         "debut": round(temps_precedent, 2),
                         "fin": round(silence["debut"], 2),
@@ -105,7 +125,7 @@ def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
                 temps_precedent = silence["fin"]
         
         # Dernier segment de parole après le dernier silence
-        if duree_totale > temps_precedent + 0.5:
+        if duree_totale > temps_precedent + 0.2:
             segments_parole.append({
                 "debut": round(temps_precedent, 2),
                 "fin": round(duree_totale, 2),
@@ -119,6 +139,7 @@ def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
                 "fin": round(duree_totale, 2),
                 "duree": round(duree_totale, 2)
             })
+            print("  Aucun silence détecté - fichier considéré comme parole continue")
         
         # Créer le fichier de résultat
         timestamps_data = {
@@ -127,6 +148,8 @@ def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
             "duree_totale_parole": round(sum(s["duree"] for s in segments_parole), 2),
             "nombre_segments": len(segments_parole),
             "segments_parole": segments_parole,
+            "seuil_utilise": seuil if 'seuil' in locals() else "auto",
+            "nombre_silences_detectes": len(silences),
             "methode": "FFmpeg silencedetect"
         }
         
