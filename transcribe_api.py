@@ -4,7 +4,9 @@ import sys
 import subprocess
 import argparse
 import json
-import tempfile
+
+MODELE = "base"
+FORMAT_SORTIE = "json"
 
 EXTENSIONS_AUDIO = (
     ".opus", ".mp3", ".wav", ".m4a", ".ogg",
@@ -26,158 +28,161 @@ def trouver_fichiers_audio(repertoire):
         sys.exit(1)
     return fichiers_audio
 
-def detecter_parole_ffmpeg(chemin_audio, repertoire_sortie):
-    """Utilise FFmpeg pour détecter les segments de silence/parole"""
-    print(f"Détection de parole avec FFmpeg: {chemin_audio}")
+def detecter_parole_whisper(chemin_audio, repertoire_sortie):
+    print(f"Analyse avec Whisper: {chemin_audio}")
 
     nom_base = os.path.splitext(os.path.basename(chemin_audio))[0]
-    nom_fichier_sortie = f"{nom_base}_timestamps.json"
+    nom_fichier_sortie = f"{nom_base}_segments.json"
     chemin_fichier_sortie = os.path.join(repertoire_sortie, nom_fichier_sortie)
 
     if os.path.exists(chemin_fichier_sortie) and os.path.getsize(chemin_fichier_sortie) > 0:
         print(f"Le fichier '{nom_fichier_sortie}' existe déjà. Passage au suivant.")
         return True
 
+    # Commande Whisper - on utilise français comme langue de base pour la détection
+    commande = [
+        "whisper",
+        chemin_audio,
+        "--model", MODELE,
+        "--output_format", "json",
+        "--output_dir", repertoire_sortie,
+        "--language", "fr",
+        "--task", "transcribe"
+    ]
+
     try:
-        # Commande FFmpeg pour détecter les silences
-        # Essayer plusieurs seuils pour trouver le bon
-        seuils = ["-50dB", "-45dB", "-40dB", "-35dB", "-30dB"]
-        segments_parole = []
-        
-        for seuil in seuils:
-            print(f"  Test avec seuil {seuil}...")
-            commande = [
-                "ffmpeg",
-                "-i", chemin_audio,
-                "-af", f"silencedetect=noise={seuil}:duration=0.3",
-                "-f", "null",
-                "-"
-            ]
-        
-        resultat = subprocess.run(commande, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        
-        if resultat.returncode != 0 and "silencedetect" not in resultat.stdout:
-            continue
-        
-        # Parser la sortie FFmpeg pour extraire les silences
-        lignes = resultat.stdout.split('\n')
-        silences = []
-        
-        for ligne in lignes:
-            if "silence_start" in ligne:
-                try:
-                    debut_silence = float(ligne.split("silence_start: ")[1].split()[0])
-                    silences.append({"debut": debut_silence, "fin": None})
-                except:
-                    continue
-            elif "silence_end" in ligne and silences:
-                try:
-                    fin_silence = float(ligne.split("silence_end: ")[1].split()[0])
-                    if silences[-1]["fin"] is None:
-                        silences[-1]["fin"] = fin_silence
-                except:
-                    continue
-        
-        print(f"    Trouvé {len(silences)} silences avec {seuil}")
-        
-        # Si on trouve des silences (mais pas trop), on s'arrête
-        if 2 <= len(silences) <= 50:
-            print(f"  Seuil optimal trouvé: {seuil}")
-            break
-        elif len(silences) > 50:
-            print(f"    Trop de silences détectés ({len(silences)}), seuil trop sensible")
-            continue
-        
-        # Si on arrive au dernier seuil sans succès, on garde ce qu'on a
-        if seuil == seuils[-1]:
-            print(f"  Utilisation du dernier seuil testé: {seuil}")
-            break
-        
-        # Obtenir la durée totale du fichier
-        commande_duree = [
-            "ffprobe",
-            "-v", "quiet",
-            "-show_entries", "format=duration",
-            "-of", "csv=p=0",
-            chemin_audio
-        ]
-        
-        try:
-            duree_result = subprocess.run(commande_duree, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            duree_totale = float(duree_result.stdout.strip())
-        except:
-            duree_totale = 0
-            print("Attention: Impossible d'obtenir la durée totale")
-        
-        # Convertir les silences en segments de parole
-        segments_parole = []
-        temps_precedent = 0
-        
-        for silence in silences:
-            if silence["fin"] is not None:
-                # Segment de parole avant ce silence
-                if silence["debut"] > temps_precedent + 0.2:  # Au moins 0.2s de parole
-                    segments_parole.append({
-                        "debut": round(temps_precedent, 2),
-                        "fin": round(silence["debut"], 2),
-                        "duree": round(silence["debut"] - temps_precedent, 2)
+        resultat = subprocess.run(commande, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        if resultat.returncode == 0:
+            # Lire le fichier JSON généré par Whisper
+            fichier_whisper = os.path.join(repertoire_sortie, f"{nom_base}.json")
+            
+            if os.path.exists(fichier_whisper):
+                with open(fichier_whisper, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # Traiter les segments et anonymiser le texte
+                segments_anonymes = []
+                for i, segment in enumerate(data.get('segments', []), 1):
+                    # Analyser la confiance pour déterminer si c'est vraiment du français
+                    confiance = segment.get('avg_logprob', -1)
+                    texte_original = segment.get('text', '').strip()
+                    
+                    # Si la confiance est faible ou le texte semble bizarre, on anonymise
+                    texte_final = anonymiser_texte_si_necessaire(texte_original, confiance)
+                    
+                    segments_anonymes.append({
+                        "segment": i,
+                        "debut": round(segment.get('start', 0), 2),
+                        "fin": round(segment.get('end', 0), 2),
+                        "duree": round(segment.get('end', 0) - segment.get('start', 0), 2),
+                        "texte": texte_final,
+                        "confiance": round(confiance, 3),
+                        "langue_detectee": detecter_langue_probable(texte_original)
                     })
-                temps_precedent = silence["fin"]
-        
-        # Dernier segment de parole après le dernier silence
-        if duree_totale > temps_precedent + 0.2:
-            segments_parole.append({
-                "debut": round(temps_precedent, 2),
-                "fin": round(duree_totale, 2),
-                "duree": round(duree_totale - temps_precedent, 2)
-            })
-        
-        # Si aucun silence détecté, considérer tout comme de la parole
-        if not segments_parole and duree_totale > 0:
-            segments_parole.append({
-                "debut": 0,
-                "fin": round(duree_totale, 2),
-                "duree": round(duree_totale, 2)
-            })
-            print("  Aucun silence détecté - fichier considéré comme parole continue")
-        
-        # Créer le fichier de résultat
-        timestamps_data = {
-            "fichier_audio": os.path.basename(chemin_audio),
-            "duree_totale_fichier": round(duree_totale, 2),
-            "duree_totale_parole": round(sum(s["duree"] for s in segments_parole), 2),
-            "nombre_segments": len(segments_parole),
-            "segments_parole": segments_parole,
-            "seuil_utilise": seuil if 'seuil' in locals() else "auto",
-            "nombre_silences_detectes": len(silences),
-            "methode": "FFmpeg silencedetect"
-        }
-        
-        with open(chemin_fichier_sortie, 'w', encoding='utf-8') as f:
-            json.dump(timestamps_data, f, indent=2, ensure_ascii=False)
-        
-        print(f"Détection terminée: {len(segments_parole)} segments de parole")
-        print(f"Durée de parole: {timestamps_data['duree_totale_parole']:.1f}s / {duree_totale:.1f}s")
-        return True
-        
+                
+                # Créer le fichier de résultat final
+                result_data = {
+                    "fichier_audio": os.path.basename(chemin_audio),
+                    "duree_totale": round(data.get('segments', [{}])[-1].get('end', 0), 2) if data.get('segments') else 0,
+                    "nombre_segments": len(segments_anonymes),
+                    "segments": segments_anonymes,
+                    "modele_whisper": MODELE,
+                    "note": "Texte anonymisé pour les langues non reconnues"
+                }
+                
+                with open(chemin_fichier_sortie, 'w', encoding='utf-8') as f:
+                    json.dump(result_data, f, indent=2, ensure_ascii=False)
+                
+                # Supprimer le fichier Whisper original
+                os.remove(fichier_whisper)
+                
+                print(f"Analyse terminée: {len(segments_anonymes)} segments détectés")
+                print(f"Durée totale: {result_data['duree_totale']:.1f} secondes")
+                
+                # Statistiques sur l'anonymisation
+                textes_anonymes = sum(1 for s in segments_anonymes if s['texte'].startswith('[PAROLE'))
+                if textes_anonymes > 0:
+                    print(f"  {textes_anonymes} segments anonymisés (langue non reconnue)")
+                
+                return True
+            else:
+                print(f"ERREUR: Fichier Whisper non trouvé pour '{os.path.basename(chemin_audio)}'")
+                return False
+        else:
+            print(f"ERREUR Whisper pour '{os.path.basename(chemin_audio)}'. Code: {resultat.returncode}")
+            if resultat.stderr:
+                print(f"Détails: {resultat.stderr.strip()}")
+            return False
+
     except FileNotFoundError:
-        print("ERREUR: FFmpeg n'est pas installé. Installez-le avec:")
-        print("  Ubuntu/Debian: sudo apt install ffmpeg")
-        print("  macOS: brew install ffmpeg")
-        print("  Windows: Téléchargez depuis https://ffmpeg.org/")
+        print(f"Erreur: 'whisper' n'est pas installé.", file=sys.stderr)
+        print(f"Installez avec: pip install openai-whisper", file=sys.stderr)
         return False
     except Exception as e:
-        print(f"Erreur lors de la détection pour '{chemin_audio}': {e}")
+        print(f"Erreur inattendue pour '{chemin_audio}': {e}", file=sys.stderr)
         return False
+
+def anonymiser_texte_si_necessaire(texte, confiance):
+    """Détermine si le texte doit être anonymisé basé sur la confiance et le contenu"""
+    
+    # Si confiance très faible, c'est probablement pas du français
+    if confiance < -0.8:
+        return f"[PAROLE INCONNUE - {len(texte.split())} mots]"
+    
+    # Vérifier si ça ressemble à du français
+    mots_francais_communs = [
+        'le', 'la', 'les', 'de', 'du', 'des', 'un', 'une', 'et', 'est', 'ce', 'que', 'qui',
+        'il', 'elle', 'nous', 'vous', 'ils', 'avec', 'pour', 'dans', 'sur', 'par', 'pas',
+        'tout', 'tous', 'bien', 'aussi', 'plus', 'très', 'comme', 'alors', 'mais', 'ou'
+    ]
+    
+    mots_texte = texte.lower().split()
+    if len(mots_texte) >= 3:
+        mots_francais_trouves = sum(1 for mot in mots_texte if any(fr in mot for fr in mots_francais_communs))
+        ratio_francais = mots_francais_trouves / len(mots_texte)
+        
+        # Si moins de 20% des mots ressemblent au français, anonymiser
+        if ratio_francais < 0.2:
+            return f"[PAROLE AUTRE LANGUE - {len(mots_texte)} mots]"
+    
+    # Vérifier des patterns suspects (beaucoup de caractères répétés, etc.)
+    if len(set(texte.replace(' ', ''))) < len(texte) / 4:  # Trop de répétitions
+        return f"[PAROLE INDÉCHIFFRABLE - {len(mots_texte)} mots]"
+    
+    # Si tout semble normal, garder le texte original
+    return texte
+
+def detecter_langue_probable(texte):
+    """Essaie de deviner la langue basée sur des indices simples"""
+    
+    if not texte.strip():
+        return "silence"
+    
+    # Indices français
+    mots_francais = ['le', 'la', 'de', 'et', 'est', 'que', 'qui', 'pour', 'avec', 'dans']
+    if any(mot in texte.lower() for mot in mots_francais):
+        return "français_probable"
+    
+    # Indices anglais
+    mots_anglais = ['the', 'and', 'that', 'have', 'for', 'not', 'with', 'you', 'this', 'but']
+    if any(mot in texte.lower() for mot in mots_anglais):
+        return "anglais_probable"
+    
+    # Caractères non-latins
+    if any(ord(c) > 127 for c in texte):
+        return "langue_non_latine"
+    
+    return "langue_inconnue"
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Détecte les segments de parole en utilisant FFmpeg (pas de dépendances Python complexes).",
+        description=f"Utilise Whisper pour détecter les segments de parole et anonymise le texte non reconnu.",
         usage="%(prog)s <repertoire_contenant_fichiers_audio>"
     )
     parser.add_argument(
         "repertoire_cible",
-        metavar="repertoire_contenant_fichiers_audio", 
+        metavar="repertoire_contenant_fichiers_audio",
         help="Chemin vers le répertoire contenant les fichiers audio à analyser."
     )
 
@@ -197,17 +202,16 @@ def main():
         print(f"Aucun fichier audio trouvé dans '{repertoire_cible}'.")
         sys.exit(0)
 
-    print(f"\nDétection de parole pour {len(fichiers_audio)} fichiers...")
-    print(f"Méthode: FFmpeg silencedetect")
-    print(f"Seuil de bruit: -30dB")
-    print(f"Durée minimale de silence: 0.5s")
+    print(f"\nAnalyse Whisper pour {len(fichiers_audio)} fichiers...")
+    print(f"Modèle: {MODELE}")
+    print(f"Mode: Détection + texte anonymisé si langue non reconnue")
     print("-" * 60)
 
     nombre_succes = 0
     nombre_erreurs = 0
 
     for fichier_audio in fichiers_audio:
-        if detecter_parole_ffmpeg(fichier_audio, repertoire_sortie):
+        if detecter_parole_whisper(fichier_audio, repertoire_sortie):
             nombre_succes += 1
         else:
             nombre_erreurs += 1
