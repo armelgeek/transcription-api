@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+Audio VAD (Voice Activity Detection) CLI Tool
+Analyse les fichiers audio pour détecter les segments de parole.
+
+Installation comme commande système:
+    chmod +x audio-vad
+    sudo cp audio-vad /usr/local/bin/
+    # ou
+    ln -s $(pwd)/audio-vad ~/.local/bin/audio-vad
+
+Usage:
+    audio-vad fichier.mp3
+    audio-vad fichier.wav --format text --pretty
+"""
 import torch
 import torchaudio
 import numpy as np
@@ -16,6 +30,7 @@ class AudioVADAnalyzer:
         self._load_model()
     
     def _load_model(self):
+        """Charge le modèle Silero VAD"""
         try:
             self.model, self.utils = torch.hub.load(
                 repo_or_dir='snakers4/silero-vad',
@@ -56,16 +71,19 @@ class AudioVADAnalyzer:
                 'speech_pad_ms': 30
             }
         
+        # Vérifier l'existence du fichier
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Fichier audio introuvable: {audio_path}")
         
         (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = self.utils
         
+        # Lire le fichier audio
         try:
             wav = read_audio(audio_path, sampling_rate=16000)
         except Exception as e:
             raise RuntimeError(f"Erreur lors de la lecture du fichier audio: {e}")
         
+        # Détecter les timestamps de parole
         speech_timestamps = get_speech_timestamps(
             wav, 
             self.model, 
@@ -73,12 +91,16 @@ class AudioVADAnalyzer:
             **config
         )
         
+        # Calculer la durée totale
         total_duration = len(wav) / 16000
         
+        # Construire les segments
         segments = self._build_segments(speech_timestamps, total_duration)
         
+        # Calculer les statistiques
         stats = self._calculate_statistics(segments, total_duration)
         
+        # Préparer le résultat
         result = {
             'file_info': {
                 'path': os.path.abspath(audio_path),
@@ -94,7 +116,7 @@ class AudioVADAnalyzer:
         return result
     
     def _build_segments(self, speech_timestamps, total_duration):
-
+        """Construit la liste des segments de parole uniquement"""
         segments = []
         
         # Segments de parole uniquement
@@ -103,6 +125,7 @@ class AudioVADAnalyzer:
             end_time = segment['end'] / 16000
             duration = end_time - start_time
             
+            # Segment de parole
             segments.append({
                 'id': i + 1,
                 'type': 'SPEECH',
@@ -117,11 +140,13 @@ class AudioVADAnalyzer:
         return segments
     
     def _calculate_statistics(self, segments, total_duration):
-        speech_segments = segments
+        """Calcule les statistiques de l'analyse"""
+        speech_segments = segments  # Tous les segments sont maintenant de la parole
         
         total_speech = sum(s['duration_seconds'] for s in speech_segments)
         total_silence = total_duration - total_speech
         
+        # Calcul des gaps entre segments de parole (anciens silences)
         gaps = []
         for i in range(len(segments) - 1):
             gap_start = segments[i]['end_seconds']
@@ -130,6 +155,7 @@ class AudioVADAnalyzer:
             if gap_duration > 0:
                 gaps.append(gap_duration)
         
+        # Gaps courts (≤ 2 secondes) - équivalent aux anciens courts silences
         short_gaps = [g for g in gaps if g <= 2.0]
         
         stats = {
@@ -155,12 +181,14 @@ def create_text_report(analysis_result, output_path):
     """Crée un rapport texte à partir des résultats JSON"""
     content = []
     
+    # En-tête
     content.append("=== ANALYSE AUDIO - SEGMENTS DE PAROLE ===\n")
     content.append(f"Fichier: {analysis_result['file_info']['filename']}")
     content.append(f"Durée totale: {analysis_result['file_info']['total_duration_formatted']}")
     content.append(f"Segments de parole détectés: {analysis_result['statistics']['speech_segments']}")
     content.append("\n" + "="*60 + "\n")
     
+    # Statistiques
     stats = analysis_result['statistics']
     content.append("STATISTIQUES:")
     content.append(f"Temps total de parole: {stats['total_speech_formatted']} ({stats['speech_percentage']:.1f}%)")
@@ -171,6 +199,7 @@ def create_text_report(analysis_result, output_path):
         content.append(f"Durée moyenne des gaps: {stats['gaps_between_speech']['average_gap_duration']:.3f}s")
     content.append("\n" + "="*60 + "\n")
     
+    # Détails des segments de parole uniquement
     content.append("SEGMENTS DE PAROLE:\n")
     
     for segment in analysis_result['segments']:
@@ -179,7 +208,8 @@ def create_text_report(analysis_result, output_path):
             f"{segment['start_formatted']} → {segment['end_formatted']} | "
             f"Durée: {segment['duration_formatted']}"
         )
-
+    
+    # Sauvegarder
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(content))
     
@@ -220,6 +250,7 @@ Exemples d'utilisation:
     args = parser.parse_args()
     
     try:
+        # Vérifier le fichier d'entrée
         if not os.path.exists(args.audio_file):
             print(f"❌ Erreur: Fichier introuvable: {args.audio_file}", file=sys.stderr)
             sys.exit(1)
@@ -274,6 +305,7 @@ Exemples d'utilisation:
             if not args.quiet:
                 print(f"✅ Rapport texte sauvegardé: {text_file}")
         
+        # Afficher un résumé si pas en mode silencieux
         if not args.quiet:
             stats = result['statistics']
             print(f"\n📊 Résumé de l'analyse:")
@@ -284,6 +316,7 @@ Exemples d'utilisation:
             print(f"   Gaps entre segments: {stats['gaps_between_speech']['count']}")
             print(f"   Gaps courts (≤2s): {stats['gaps_between_speech']['short_gaps_count']}")
         
+        # Sortie JSON sur stdout si format JSON uniquement
         if args.format == 'json' and not args.output:
             if args.pretty:
                 print(json.dumps(result, indent=2, ensure_ascii=False))
